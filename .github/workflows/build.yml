@@ -16,7 +16,7 @@ env:
 
 jobs:
   build:
-    name: Build Android (${{ matrix.unity_version }})
+    name: Android Build - Unity ${{ matrix.unity_version }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -32,9 +32,11 @@ jobs:
             unity_slug: "2022-x-x"
 
     steps:
+      # Checkout repository
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Extract Android project
       - name: Unzip Android project
         shell: bash
         run: |
@@ -42,9 +44,10 @@ jobs:
 
           if [[ -f MistyTemp.zip ]]; then
             unzip -q -o MistyTemp.zip
-            echo "Unzipped MistyTemp.zip"
+            echo "Successfully extracted MistyTemp.zip"
           fi
 
+      # Locate Gradle project
       - name: Locate Android project
         id: project
         shell: bash
@@ -58,29 +61,37 @@ jobs:
             echo "dir=MistyTemp" >> "$GITHUB_OUTPUT"
 
           else
-            echo "Android project not found!" >&2
+            echo "ERROR: Android project not found!"
             echo "Expected gradlew and app/ at root or inside MistyTemp/"
             ls -la
             exit 1
           fi
 
+      # Java 17
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # FIX: Do not install deprecated Android SDK tools package
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
+          packages: ''
 
+      # Install required SDK components manually
       - name: Install Android build packages
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "Accepting Android SDK licenses..."
+
           yes | sdkmanager --licenses >/dev/null || true
+
+          echo "Installing Android NDK and build tools..."
 
           sdkmanager --install \
             "ndk;${NDK_VERSION}" \
@@ -89,10 +100,15 @@ jobs:
             "platform-tools" \
             "platforms;${PLATFORM}"
 
-          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
+          echo "Configuring Android environment..."
 
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+          echo "Android SDK installation completed!"
+
+      # Configure SDK paths
       - name: Configure local SDK paths
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -106,6 +122,9 @@ jobs:
             "$ANDROID_HOME" \
             "$NDK_VERSION" > local.properties
 
+          cat local.properties
+
+      # Fix CMake arguments placement
       - name: Fix CMake arguments placement (AGP 8+)
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -119,11 +138,12 @@ jobs:
           p = Path("app/build.gradle")
 
           if not p.exists():
-              raise SystemExit("app/build.gradle not found")
+              raise SystemExit("ERROR: app/build.gradle not found")
 
           text = p.read_text()
 
-          # Remove Unity version arguments from the top-level CMake block.
+          # Remove Unity version configuration from the top-level
+          # CMake configuration if it exists.
           text = re.sub(
               r'\n\s*def unityVersion\s*=\s*providers\.gradleProperty\([\'"]unityVersion[\'"]\)'
               r'\.orElse\([\'"]2022\.x\.x[\'"]\)\.get\(\)\s*'
@@ -132,15 +152,15 @@ jobs:
               text
           )
 
-          # Remove any remaining misplaced arguments declaration.
           text = re.sub(
               r'\n\s*arguments\s+"-DMISTYTEMP_UNITY_VERSION=\$\{unityVersion\}"',
               '',
               text
           )
 
-          # Add the Unity version argument inside defaultConfig.
+          # Add Unity version argument inside defaultConfig.
           if "MISTYTEMP_UNITY_VERSION" not in text:
+
               pattern = r'(defaultConfig\s*\{)'
 
               replacement = r'''\1
@@ -152,10 +172,15 @@ jobs:
                   }
               '''
 
-              text, count = re.subn(pattern, replacement, text, count=1)
+              text, count = re.subn(
+                  pattern,
+                  replacement,
+                  text,
+                  count=1
+              )
 
               if count == 0:
-                  raise SystemExit("Could not locate defaultConfig block")
+                  raise SystemExit("ERROR: Could not find defaultConfig block")
 
           p.write_text(text)
 
@@ -167,6 +192,7 @@ jobs:
           echo "Updated Gradle configuration:"
           sed -n '1,220p' app/build.gradle
 
+      # Build native library
       - name: Build native shared library
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -175,6 +201,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Building Unity version: ${UNITY_VERSION}"
+          echo "ABI: ${{ matrix.abi }}"
+
           ./gradlew \
             --no-daemon \
             --stacktrace \
@@ -182,13 +211,16 @@ jobs:
             -Pandroid.injected.build.abi=${{ matrix.abi }} \
             -PunityVersion="${UNITY_VERSION}"
 
+      # Upload compiled shared libraries
       - name: Upload native library
         uses: actions/upload-artifact@v4
         with:
           name: mistytemp-unity-${{ matrix.unity_slug }}-${{ matrix.abi }}-so
+
           path: |
             **/app/build/intermediates/cxx/**/obj/${{ matrix.abi }}/*.so
             **/app/build/intermediates/cmake/**/${{ matrix.abi }}/*.so
             **/app/build/intermediates/**/*.so
+
           if-no-files-found: error
           retention-days: 14

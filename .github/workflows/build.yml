@@ -29,6 +29,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Unzip Android project
+        run: |
+          set -euo pipefail
+          if [[ -f MistyTemp.zip ]]; then
+            unzip -q -o MistyTemp.zip
+            echo "Unzipped MistyTemp.zip"
+          fi
+
       - name: Locate Android project
         id: project
         shell: bash
@@ -40,6 +48,7 @@ jobs:
             echo "dir=MistyTemp" >> "$GITHUB_OUTPUT"
           else
             echo "Android project not found (expected gradlew and app/ at root or in MistyTemp/)" >&2
+            ls -la
             exit 1
           fi
 

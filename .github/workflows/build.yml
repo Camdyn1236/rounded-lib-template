@@ -52,6 +52,72 @@ jobs:
             exit 1
           fi
 
+      - name: Fix CMake arguments placement (AGP 8+)
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          set -euo pipefail
+          # Move unityVersion argument from top-level cmake {} into defaultConfig
+          # so it works with AGP 8.6
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/build.gradle")
+          text = p.read_text()
+          old = """    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+            def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
+            arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
+        }
+    }"""
+          new = """    defaultConfig {
+        externalNativeBuild {
+            cmake {
+                def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
+                arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }"""
+          if old not in text:
+              # already fixed or different formatting – try a more tolerant replace
+              import re
+              text2 = re.sub(
+                  r"externalNativeBuild\s*\{\s*cmake\s*\{[^}]*arguments\s*\"-DMISTYTEMP_UNITY_VERSION=[^\"]*\"[^}]*\}\s*\}",
+                  """defaultConfig {
+        externalNativeBuild {
+            cmake {
+                def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
+                arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }""",
+                  text,
+                  count=1,
+                  flags=re.DOTALL,
+              )
+              if text2 == text:
+                  print("WARNING: could not locate the cmake arguments block to patch")
+                  print(text)
+              else:
+                  p.write_text(text2)
+                  print("Patched via regex")
+          else:
+              p.write_text(text.replace(old, new))
+              print("Patched exact match")
+          PY
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -62,7 +128,7 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-          packages: ''   # do not let the action install the obsolete 'tools' package
+          packages: ''
 
       - name: Install Android build packages
         run: |

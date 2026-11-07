@@ -56,67 +56,65 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           set -euo pipefail
-          # Move unityVersion argument from top-level cmake {} into defaultConfig
-          # so it works with AGP 8.6
-          python3 - <<'PY'
+          # AGP 8.x no longer accepts arguments{} on the top-level externalNativeBuild.cmake block.
+          # Move it under defaultConfig.
+          cat > /tmp/fix_cmake.py << 'EOF'
           from pathlib import Path
+          import re
+
           p = Path("app/build.gradle")
           text = p.read_text()
-          old = """    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
-            def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
-            arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
-        }
-    }"""
-          new = """    defaultConfig {
-        externalNativeBuild {
-            cmake {
-                def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
-                arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
-            }
-        }
-    }
-    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
-        }
-    }"""
-          if old not in text:
-              # already fixed or different formatting – try a more tolerant replace
-              import re
-              text2 = re.sub(
-                  r"externalNativeBuild\s*\{\s*cmake\s*\{[^}]*arguments\s*\"-DMISTYTEMP_UNITY_VERSION=[^\"]*\"[^}]*\}\s*\}",
-                  """defaultConfig {
-        externalNativeBuild {
-            cmake {
-                def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
-                arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
-            }
-        }
-    }
-    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
-        }
-    }""",
-                  text,
-                  count=1,
-                  flags=re.DOTALL,
+
+          # Remove the bad arguments line from the top-level cmake block
+          text = re.sub(
+              r'(\s*version\s+[\'"]3\.22\.1[\'"]\s*)\n\s*def unityVersion = providers\.gradleProperty\([\'"]unityVersion[\'"]\)\.orElse\([\'"]2022\.x\.x[\'"]\)\.get\(\)\s*\n\s*arguments\s+"-DMISTYTEMP_UNITY_VERSION=\$\{unityVersion\}"',
+              r'\1',
+              text,
+          )
+
+          # Also handle the case where arguments is present without the def line in between
+          text = re.sub(
+              r'\n\s*arguments\s+"-DMISTYTEMP_UNITY_VERSION=\$\{unityVersion\}"',
+              '',
+              text,
+          )
+
+          # Inject correct block inside defaultConfig if not already present
+          if "MISTYTEMP_UNITY_VERSION" not in text:
+              text = text.replace(
+                  """    defaultConfig {
+          applicationId "com.glitch.HoldableTemplate"
+          minSdk 27
+          targetSdk 34
+          versionCode 1
+          versionName "1.0"
+
+          testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+      }""",
+                  """    defaultConfig {
+          applicationId "com.glitch.HoldableTemplate"
+          minSdk 27
+          targetSdk 34
+          versionCode 1
+          versionName "1.0"
+
+          testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+          externalNativeBuild {
+              cmake {
+                  def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
+                  arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
+              }
+          }
+      }""",
               )
-              if text2 == text:
-                  print("WARNING: could not locate the cmake arguments block to patch")
-                  print(text)
-              else:
-                  p.write_text(text2)
-                  print("Patched via regex")
-          else:
-              p.write_text(text.replace(old, new))
-              print("Patched exact match")
-          PY
+
+          p.write_text(text)
+          print("Patched app/build.gradle")
+          print("---")
+          print(p.read_text())
+          EOF
+          python3 /tmp/fix_cmake.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4

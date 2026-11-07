@@ -1,226 +1,177 @@
-name: Android NDK Build
+name: MistyTemp Android Build
 
 on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
-  workflow_dispatch:
+push:
+branches:
+\- main
+\- master
+pull_request:
+workflow_dispatch:
+
+permissions:
+contents: read
+
+concurrency:
+group: mistytemp-${{ github.ref }}
+cancel-in-progress: true
 
 env:
-  NDK_VERSION: "26.1.10909125"
-  CMAKE_VERSION: "3.22.1"
-  BUILD_TOOLS: "35.0.0"
-  PLATFORM: "android-35"
+NDK_VERSION: "26.1.10909125"
+CMAKE_VERSION: "3.22.1"
+BUILD_TOOLS_VERSION: "35.0.0"
+ANDROID_PLATFORM: "android-35"
 
 jobs:
-  build:
-    name: Android Build - Unity ${{ matrix.unity_version }}
-    runs-on: ubuntu-latest
+build:
+name: Unity ${{ matrix.unity_version }} - ${{ matrix.abi }}
+runs-on: ubuntu-latest
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - abi: arm64-v8a
-            unity_version: "2021.x.x"
-            unity_slug: "2021-x-x"
+```
+strategy:
+  fail-fast: false
+  matrix:
+    include:
+      - unity_version: "2021.3"
+        abi: "arm64-v8a"
+      - unity_version: "2022.3"
+        abi: "arm64-v8a"
 
-          - abi: arm64-v8a
-            unity_version: "2022.x.x"
-            unity_slug: "2022-x-x"
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-    steps:
-      # Checkout repository
-      - name: Checkout
-        uses: actions/checkout@v4
+  - name: Find Android project
+    id: project
+    shell: bash
+    run: |
+      set -euo pipefail
 
-      # Extract Android project
-      - name: Unzip Android project
-        shell: bash
-        run: |
-          set -euo pipefail
+      if [[ -f "gradlew" && -d "app" ]]; then
+        echo "dir=." >> "$GITHUB_OUTPUT"
+      elif [[ -f "MistyTemp/gradlew" && -d "MistyTemp/app" ]]; then
+        echo "dir=MistyTemp" >> "$GITHUB_OUTPUT"
+      else
+        echo "::error::Could not find the Android Gradle project."
+        find . -maxdepth 4 -name gradlew -o -name settings.gradle
+        exit 1
+      fi
 
-          if [[ -f MistyTemp.zip ]]; then
-            unzip -q -o MistyTemp.zip
-            echo "Successfully extracted MistyTemp.zip"
-          fi
+  - name: Set up Java 17
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: "17"
 
-      # Locate Gradle project
-      - name: Locate Android project
-        id: project
-        shell: bash
-        run: |
-          set -euo pipefail
+  - name: Set up Android SDK
+    uses: android-actions/setup-android@v4
+    with:
+      accept-android-sdk-licenses: true
+      packages: ''
 
-          if [[ -f gradlew && -d app ]]; then
-            echo "dir=." >> "$GITHUB_OUTPUT"
+  - name: Install Android SDK packages
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          elif [[ -f MistyTemp/gradlew && -d MistyTemp/app ]]; then
-            echo "dir=MistyTemp" >> "$GITHUB_OUTPUT"
+      sdkmanager --install \
+        "platform-tools" \
+        "platforms;${ANDROID_PLATFORM}" \
+        "build-tools;${BUILD_TOOLS_VERSION}" \
+        "cmake;${CMAKE_VERSION}" \
+        "ndk;${NDK_VERSION}"
 
-          else
-            echo "ERROR: Android project not found!"
-            echo "Expected gradlew and app/ at root or inside MistyTemp/"
-            ls -la
-            exit 1
-          fi
+      echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      # Java 17
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+  - name: Accept Android licenses
+    shell: bash
+    run: |
+      yes | sdkmanager --licenses || true
 
-      # FIX: Do not install deprecated Android SDK tools package
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          accept-android-sdk-licenses: true
-          packages: ''
+  - name: Configure Android project
+    working-directory: ${{ steps.project.outputs.dir }}
+    shell: bash
+    run: |
+      set -euo pipefail
 
-      # Install required SDK components manually
-      - name: Install Android build packages
-        shell: bash
-        run: |
-          set -euo pipefail
+      chmod +x gradlew
 
-          echo "Accepting Android SDK licenses..."
+      printf 'sdk.dir=%s\nndk.dir=%s/ndk/%s\n' \
+        "$ANDROID_HOME" \
+        "$ANDROID_HOME" \
+        "$NDK_VERSION" > local.properties
 
-          yes | sdkmanager --licenses >/dev/null || true
+  - name: Set up Gradle cache
+    uses: gradle/actions/setup-gradle@v4
 
-          echo "Installing Android NDK and build tools..."
+  - name: Build MistyTemp
+    working-directory: ${{ steps.project.outputs.dir }}
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          sdkmanager --install \
-            "ndk;${NDK_VERSION}" \
-            "cmake;${CMAKE_VERSION}" \
-            "build-tools;${BUILD_TOOLS}" \
-            "platform-tools" \
-            "platforms;${PLATFORM}"
+      echo "Building Unity version: ${{ matrix.unity_version }}"
+      echo "Android ABI: ${{ matrix.abi }}"
 
-          echo "Configuring Android environment..."
+      ./gradlew \
+        --no-daemon \
+        --stacktrace \
+        --info \
+        :app:assembleDebug \
+        -PunityVersion=${{ matrix.unity_version }} \
+        -Pandroid.injected.build.abi=${{ matrix.abi }}
 
-          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+  - name: Find compiled shared library
+    id: library
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          echo "Android SDK installation completed!"
+      PROJECT_DIR="${{ steps.project.outputs.dir }}"
 
-      # Configure SDK paths
-      - name: Configure local SDK paths
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      LIBRARY=$(find "$PROJECT_DIR/app/build/intermediates" \
+        -type f \
+        -name "libMistyTemp.so" \
+        -path "*${{ matrix.abi }}*" \
+        -print -quit)
 
-          chmod +x gradlew
+      if [[ -z "$LIBRARY" ]]; then
+        echo "::error::libMistyTemp.so was not generated."
+        echo "Available shared libraries:"
+        find "$PROJECT_DIR/app/build" -type f -name "*.so" || true
+        exit 1
+      fi
 
-          printf 'sdk.dir=%s\nndk.dir=%s/ndk/%s\n' \
-            "$ANDROID_HOME" \
-            "$ANDROID_HOME" \
-            "$NDK_VERSION" > local.properties
+      echo "library=$LIBRARY" >> "$GITHUB_OUTPUT"
+      echo "Found: $LIBRARY"
 
-          cat local.properties
+  - name: Prepare build artifact
+    shell: bash
+    run: |
+      set -euo pipefail
 
-      # Fix CMake arguments placement
-      - name: Fix CMake arguments placement (AGP 8+)
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
+      OUTPUT="dist/unity-${{ matrix.unity_version }}/${{ matrix.abi }}"
 
-          cat > /tmp/fix_cmake.py <<'PYTHON'
-          from pathlib import Path
-          import re
+      mkdir -p "$OUTPUT"
 
-          p = Path("app/build.gradle")
+      cp "${{ steps.library.outputs.library }}" "$OUTPUT/libMistyTemp.so"
 
-          if not p.exists():
-              raise SystemExit("ERROR: app/build.gradle not found")
+      cat > "$OUTPUT/build-info.txt" << EOF
+      Project: MistyTemp
+      Unity Version: ${{ matrix.unity_version }}
+      Android ABI: ${{ matrix.abi }}
+      NDK Version: ${NDK_VERSION}
+      CMake Version: ${CMAKE_VERSION}
+      Build: ${GITHUB_RUN_NUMBER}
+      Commit: ${GITHUB_SHA}
+      EOF
 
-          text = p.read_text()
+      ls -lah "$OUTPUT"
 
-          # Remove Unity version configuration from the top-level
-          # CMake configuration if it exists.
-          text = re.sub(
-              r'\n\s*def unityVersion\s*=\s*providers\.gradleProperty\([\'"]unityVersion[\'"]\)'
-              r'\.orElse\([\'"]2022\.x\.x[\'"]\)\.get\(\)\s*'
-              r'\n\s*arguments\s+"-DMISTYTEMP_UNITY_VERSION=\$\{unityVersion\}"',
-              '',
-              text
-          )
-
-          text = re.sub(
-              r'\n\s*arguments\s+"-DMISTYTEMP_UNITY_VERSION=\$\{unityVersion\}"',
-              '',
-              text
-          )
-
-          # Add Unity version argument inside defaultConfig.
-          if "MISTYTEMP_UNITY_VERSION" not in text:
-
-              pattern = r'(defaultConfig\s*\{)'
-
-              replacement = r'''\1
-                  externalNativeBuild {
-                      cmake {
-                          def unityVersion = providers.gradleProperty('unityVersion').orElse('2022.x.x').get()
-                          arguments "-DMISTYTEMP_UNITY_VERSION=${unityVersion}"
-                      }
-                  }
-              '''
-
-              text, count = re.subn(
-                  pattern,
-                  replacement,
-                  text,
-                  count=1
-              )
-
-              if count == 0:
-                  raise SystemExit("ERROR: Could not find defaultConfig block")
-
-          p.write_text(text)
-
-          print("Successfully patched app/build.gradle")
-          PYTHON
-
-          python3 /tmp/fix_cmake.py
-
-          echo "Updated Gradle configuration:"
-          sed -n '1,220p' app/build.gradle
-
-      # Build native library
-      - name: Build native shared library
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        env:
-          UNITY_VERSION: ${{ matrix.unity_version }}
-        run: |
-          set -euo pipefail
-
-          echo "Building Unity version: ${UNITY_VERSION}"
-          echo "ABI: ${{ matrix.abi }}"
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            :app:externalNativeBuildDebug \
-            -Pandroid.injected.build.abi=${{ matrix.abi }} \
-            -PunityVersion="${UNITY_VERSION}"
-
-      # Upload compiled shared libraries
-      - name: Upload native library
-        uses: actions/upload-artifact@v4
-        with:
-          name: mistytemp-unity-${{ matrix.unity_slug }}-${{ matrix.abi }}-so
-
-          path: |
-            **/app/build/intermediates/cxx/**/obj/${{ matrix.abi }}/*.so
-            **/app/build/intermediates/cmake/**/${{ matrix.abi }}/*.so
-            **/app/build/intermediates/**/*.so
-
-          if-no-files-found: error
-          retention-days: 14
+  - name: Upload compiled library
+    uses: actions/upload-artifact@v4
+    with:
+      name: MistyTemp-Unity-${{ matrix.unity_version }}-${{ matrix.abi }}
+      path: dist/unity-${{ matrix.unity_version }}/${{ matrix.abi }}/
+      if-no-files-found: error
+      retention-days: 30
+```

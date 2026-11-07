@@ -58,20 +58,25 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
+          packages: ''   # do not let the action install the obsolete 'tools' package
 
       - name: Install Android build packages
         run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install \
             "ndk;${NDK_VERSION}" \
             "cmake;${CMAKE_VERSION}" \
             "build-tools;${BUILD_TOOLS}" \
             "platform-tools" \
             "platforms;${PLATFORM}"
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "$GITHUB_ENV"
 
       - name: Configure local SDK paths
         working-directory: ${{ steps.project.outputs.dir }}

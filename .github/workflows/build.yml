@@ -21,7 +21,7 @@ env:
   BUILD_TOOLS_VERSION: '35.0.0'
   ANDROID_PLATFORM: 'android-35'
   # must match the zip sitting at repository root
-  SOURCE_ZIP: 'MistyTemp_MultiUnity_Full.zip'
+  SOURCE_ZIP: 'MistyTemp_JupiterX_Bots_Full.zip'
 
 jobs:
   build:
